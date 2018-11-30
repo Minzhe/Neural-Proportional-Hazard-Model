@@ -9,4 +9,4 @@ def load_dataset(name, **kwargs):
     usecols : list of columns in file to use
     Returns : Pandas dataframe
     '''
-    return pd.read_csv(resource_filename('NeuralPHSurvival', 'datasets/' + name + '.csv'), engine='python', **kwargs)
+    return pd.read_csv(resource_filename('neuralph', 'datasets/' + name + '.csv'), engine='python', **kwargs)

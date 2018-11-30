@@ -14,6 +14,16 @@
 # # kmf.plot()
 # rossi_dataset.head()
 
-from NeuralPHSurvival.datasets import load_dataset
-lung = load_dataset('lung')
-print(lung)
+from neuralph.datasets import load_dataset
+from neuralph import NeuralPHFitter
+
+lung = load_dataset('lung').iloc[:,1:]
+lung['status'] = lung['status'].apply(lambda x: 1 if x == 2 else 0)
+lung['ph.ecog'].fillna(value=1, inplace=True)
+lung['ph.karno'].fillna(value=lung['ph.karno'].mean(), inplace=True)
+lung['pat.karno'].fillna(value=lung['pat.karno'].mean(), inplace=True)
+lung['meal.cal'].fillna(value=lung['meal.cal'].mean(), inplace=True)
+lung['wt.loss'].fillna(value=lung['wt.loss'].mean(), inplace=True)
+
+nph = NeuralPHFitter()
+nph.fit(lung, duration_col='time', event_col='status')

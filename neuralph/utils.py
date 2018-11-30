@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-def concordance_index(event_times, predicted_scores, event_observed=None):
+def concordance_index(predicted_scores, event_times, event_observed=None):
     '''
     Calculates the concordance index (C-index) between two series
     of event times. The first is the real survival times from
@@ -104,10 +104,13 @@ def _c_index(event_times, predicted_event_times, event_observed):
         raise ZeroDivisionError('No admissable pairs in the dataset.')
     return csum / paircount
 
-def pass_for_numeric_dtypes_or_raise(df):
+def pass_for_numeric_dtypes_and_no_na(df):
     nonnumeric_cols = df.select_dtypes(exclude=[np.number, bool]).columns.tolist()
     if len(nonnumeric_cols) > 0:
         raise TypeError('DataFrame contains nonnumeric columns: {}. Try using pandas.get_dummies to convert the non-numeric column(s) to numerical data, or dropping the column(s).'.format(nonnumeric_cols))
+    na_cols = [col for col in df.columns.values if df[col].isnull().any()]
+    if len(na_cols) > 0:
+        raise ValueError('DataFrame columns {} contains NaN.'.format(na_cols))
 
 def check_nans(array):
     if pd.isnull(array).any():
