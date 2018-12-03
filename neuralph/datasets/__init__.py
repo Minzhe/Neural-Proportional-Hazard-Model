@@ -1,7 +1,7 @@
 import pandas as pd
 from pkg_resources import resource_filename
 
-def load_dataset(name, **kwargs):
+def load_dataset(name, processed=False, **kwargs):
     '''
     Load a dataset from NeuralPHSurvival.datasets
     Parameters:
@@ -9,4 +9,7 @@ def load_dataset(name, **kwargs):
     usecols : list of columns in file to use
     Returns : Pandas dataframe
     '''
-    return pd.read_csv(resource_filename('neuralph', 'datasets/' + name + '.csv'), engine='python', **kwargs)
+    if processed:
+        return pd.read_csv(resource_filename('neuralph', 'datasets/' + name + '_processed.csv'), engine='python', **kwargs)
+    else:
+        return pd.read_csv(resource_filename('neuralph', 'datasets/' + name + '.csv'), engine='python', **kwargs)
