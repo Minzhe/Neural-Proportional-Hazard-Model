@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 # # kmf.plot()
 # rossi_dataset.head()
 
+import sys
+sys.path.append('..')
 from neuralph.datasets import load_dataset
 from neuralph import NeuralPHFitter
 import matplotlib.pyplot as plt
@@ -24,8 +26,7 @@ rossi = load_dataset('rossi')
 nph = NeuralPHFitter(lung, duration_col='time', event_col='status', hidden_layer_sizes=(16,8), activation='relu')
 # trace = nph.fit(verbose=1, lr=0.01, epoch=100, optimizer='Adam')
 nph.load('nph.h5')
-baseline = nph.summary
-baseline.plot()
+nph.plot_baseline()
 plt.show()
 
 # cph = CoxPHFitter()

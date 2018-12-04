@@ -6,7 +6,8 @@
 import os
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import scale
+from matplotlib import pyplot as plt
+plt.style.use('seaborn')
 from keras.models import load_model, Sequential
 from keras.layers import Dense
 from keras.optimizers import Adam, SGD, RMSprop
@@ -161,7 +162,7 @@ class NeuralPHFitter(object):
                                            '_concordance_index': self._concordance_index})
         self.model = model
         print('\nDone training')
-        self.summarize()
+        self._summarize()
 
         return trace.history
     
@@ -173,11 +174,13 @@ class NeuralPHFitter(object):
         print('Loading model from {} ...'.format(path))
         self.model = load_model(path, custom_objects={'_neg_log_partial_likelihood': self._neg_log_partial_likelihood,
                                                       '_concordance_index': self._concordance_index})
-        self.summarize()
-        
-    def summarize(self):
+        self._summarize()
+
+
+    def _summarize(self):
         self.variable_hazard = self._compute_variable_hazard()
         self.baseline_hazard, self.baseline_cumulative_hazard, self.baseline_survival = self._compute_baseline_survival()
+
 
     @property
     def summary(self):
@@ -218,6 +221,26 @@ class NeuralPHFitter(object):
 
         X = self._scale_columns(X, mean=self._col_mean, std=self._col_std)
         return pd.DataFrame(np.exp(self.model.predict(X)), index=index, columns=['partial_hazard'])
+    
+
+    def plot_baseline(self, plot_KM=True, plot_KM_CI=True, ax=None):
+        '''
+        Plot the baseline survival curve (whether or not to plot KM survial estimate for comparsion)
+        '''
+        f, ax = plt.subplots() if ax is None else ax
+        f = ax.plot(self.baseline_survival)
+
+        if plot_KM:
+            kmf = utils.KaplanMeierFitter(durations=self.durations, event_observed=self.event_observed, alpha=0.95)
+            survial = kmf.survival_function
+            ci = kmf.confidence_interval
+            f = ax.plot(survial)
+            if plot_KM_CI:
+                c = f[-1].get_color()
+                ax.fill_between(x=ci.index.values, y1=ci.values[:,0], color=c, y2=ci.values[:,1], alpha=0.3, linewidth=1.0)
+        
+        return ax
+
     
     #########################    internal functions   ##############################
     def _compute_variable_hazard(self):
@@ -261,7 +284,7 @@ class NeuralPHFitter(object):
         return baseline_hazard, baseline_cumulative_hazard, baseline_survival
 
 
-    # >>>>>>>>>>>>>>>>  tensorflow function  <<<<<<<<<<<<<<<< #
+    # >>>>>>>>>>>  tensorflow function  <<<<<<<<<<< #
     @staticmethod
     def _neg_log_partial_likelihood(T_E, pred_score):
         '''
