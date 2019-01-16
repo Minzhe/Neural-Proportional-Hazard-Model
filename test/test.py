@@ -23,9 +23,9 @@ import matplotlib.pyplot as plt
 lung = load_dataset('lung', processed=True)
 rossi = load_dataset('rossi')
 
-nph = NeuralPHFitter(lung, duration_col='time', event_col='status', hidden_layer_sizes=(16,8), activation='relu')
-# trace = nph.fit(verbose=1, lr=0.01, epoch=100, optimizer='Adam')
-nph.load('nph.h5')
+nph = NeuralPHFitter(lung, duration_col='time', event_col='status', hidden_layer_sizes=(16,8), activation='linear')
+trace = nph.fit(verbose=1, lr=0.01, epoch=200, optimizer='Adam', validation_split=0.4, model_save_path='linear.h5')
+# nph.load('nph.h5')
 nph.plot_baseline()
 plt.show()
 

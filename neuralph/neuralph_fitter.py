@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 plt.style.use('seaborn')
+from sklearn.model_selection import train_test_split
 from keras.models import load_model, Sequential
 from keras.layers import Dense
 from keras.optimizers import Adam, SGD, RMSprop
@@ -148,10 +149,11 @@ class NeuralPHFitter(object):
         
         # model fitting
         print('Start training neural network model ... ', flush=True)
-        early_stopper = EarlyStopping(monitor=monitor, patience=10, verbose=1)
+        early_stopper = EarlyStopping(monitor=monitor, patience=50, verbose=1)
         check_pointer = ModelCheckpoint(model_save_path, monitor=monitor, verbose=1, save_best_only=True)
-        trace = model.fit(self._X, self._y,
-                                validation_split=validation_split,
+        X_train, X_val, y_train, y_val = train_test_split(self._X, self._y, test_size=0.33)
+        trace = model.fit(X_train, y_train,
+                                validation_data=(X_val, y_val),
                                 batch_size=batch_size,
                                 epochs=epoch,
                                 verbose=verbose,
@@ -223,21 +225,24 @@ class NeuralPHFitter(object):
         return pd.DataFrame(np.exp(self.model.predict(X)), index=index, columns=['partial_hazard'])
     
 
-    def plot_baseline(self, plot_KM=True, plot_KM_CI=True, ax=None):
+    def plot_baseline(self, plot_KM=True, plot_KM_CI=True, ax=None, title_append=''):
         '''
         Plot the baseline survival curve (whether or not to plot KM survial estimate for comparsion)
         '''
         f, ax = plt.subplots() if ax is None else ax
-        f = ax.plot(self.baseline_survival)
+        f = ax.plot(self.baseline_survival, label='NeuralPH estimate')
 
         if plot_KM:
             kmf = utils.KaplanMeierFitter(durations=self.durations, event_observed=self.event_observed, alpha=0.95)
             survial = kmf.survival_function
             ci = kmf.confidence_interval
-            f = ax.plot(survial)
+            f = ax.plot(survial, label='KM estimate')
             if plot_KM_CI:
                 c = f[-1].get_color()
                 ax.fill_between(x=ci.index.values, y1=ci.values[:,0], color=c, y2=ci.values[:,1], alpha=0.3, linewidth=1.0)
+        
+        ax.set_title('Baseline survival function' + title_append)
+        ax.legend()
         
         return ax
 
