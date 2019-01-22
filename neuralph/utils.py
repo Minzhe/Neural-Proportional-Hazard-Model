@@ -158,26 +158,11 @@ def _group_event_table_by_intervals(event_table, intervals):
                                                                                 'at_risk': ['max']})
 
 
-#############################   calculate concordance   ###############################
-def concordance_index(predicted_scores, event_times, event_observed=None):
+##########################  loss and metrics   #############################
+# clean data
+def _clean_time_series(predicted_scores, event_times, event_observed=None):
     '''
-    Calculates the concordance index (C-index) between two series
-    of event times. The first is the real survival times from
-    the experimental data, and the other is the predicted survival
-    times from a model of some kind.
-    The concordance index is a value between 0 and 1 where,
-    0.5 is the expected result from random predictions,
-    1.0 is perfect concordance and,
-    0.0 is perfect anti-concordance (multiply predictions with -1 to get 1.0)
-    Score is usually 0.6-0.7 for survival models.
-
-    Parameters:
-      event_times: a (n,) array of observed survival times.
-      predicted_scores: a (n,) array of predicted scores - these could be survival times, or hazards, etc.
-      event_observed: a (n,) array of censorship flags, 1 if observed,
-                      0 if not. Default None assumes all observed.
-    Returns:
-      c-index: a value between 0 and 1.
+    Clean the input scores, event_time and event series.
     '''
     event_times = np.array(event_times, dtype=float)
     predicted_scores = np.array(predicted_scores, dtype=float)
@@ -202,17 +187,57 @@ def concordance_index(predicted_scores, event_times, event_observed=None):
         if event_observed.shape != event_times.shape:
             raise ValueError('Observed events must be 1-dimensional of same length as event times')
         event_observed = np.array(event_observed, dtype=float).ravel()
-
-    return _c_index(event_times, predicted_scores, event_observed)
-
-def _c_index(event_times, predicted_event_times, event_observed):
+    
+    # sort on time
+    idx = np.argsort(event_times)
+    
+    return predicted_scores[idx], event_times[idx], event_observed[idx]
+    
+# log partial likelihood
+def neg_log_partial_likelihood(predicted_scores, event_times, event_observed=None):
     '''
-    Compute the concordance index between the predicted hazard ratio and observed event.
-    Assumes the data has been verified by neuralph.utils.concordance_index first.
+    Calculate the log partial likelihood of a predicted hazard score v.s. observed event series.
+    
+    Parameters:
+        predicted_scores: a (n,) array of predicted scores - these could be survival times, or hazards, etc.
+        event_times: a (n,) array of observed survival times.
+        event_observed: a (n,) array of censorship flags, 1 if observed,
+                      0 if not. Default None assumes all observed.
+    Returns:
+        a real positive value
     '''
+    predicted_scores, event_times, event_observed = _clean_time_series(predicted_scores, event_times, event_observed)
+    at_risk = np.log(np.cumsum(np.exp(predicted_scores)[::-1])[::-1])
+    l = predicted_scores - at_risk
+    return -np.sum(l[event_observed == 1])
 
+
+
+# concordance index
+def concordance_index(predicted_scores, event_times, event_observed=None):
+    '''
+    Calculates the concordance index (C-index) between two series
+    of event times. The first is the real survival times from
+    the experimental data, and the other is the predicted survival
+    times from a model of some kind.
+    The concordance index is a value between 0 and 1 where,
+    0.5 is the expected result from random predictions,
+    1.0 is perfect concordance and,
+    0.0 is perfect anti-concordance (multiply predictions with -1 to get 1.0)
+    Score is usually 0.6-0.7 for survival models.
+
+    Parameters:
+      event_times: a (n,) array of observed survival times.
+      predicted_scores: a (n,) array of predicted scores - these could be survival times, or hazards, etc.
+      event_observed: a (n,) array of censorship flags, 1 if observed,
+                      0 if not. Default None assumes all observed.
+    Returns:
+      c-index: a value between 0 and 1.
+    '''
     def _valid_comparison(time_a, time_b, event_a, event_b):
-        '''True if times can be compared.'''
+        '''
+        True if times can be compared.
+        '''
         if time_a == time_b:
             # Ties are only informative if exactly one event happened
             return event_a != event_b
@@ -230,24 +255,27 @@ def _c_index(event_times, predicted_event_times, event_observed):
             # Same as random
             return 0.5
         elif pred_a < pred_b:
-            return (time_a < time_b) or (time_a == time_b and event_a and not event_b)
-        else:  # pred_a > pred_b
             return (time_a > time_b) or (time_a == time_b and not event_a and event_b)
+        else:  # pred_a > pred_b
+            return (time_a < time_b) or (time_a == time_b and event_a and not event_b)
     
+    predicted_scores, event_times, event_observed = _clean_time_series(predicted_scores, event_times, event_observed)
     paircount = 0.0
     csum = 0.0
 
     for a in range(0, len(event_times)):
         time_a = event_times[a]
-        pred_a = predicted_event_times[a]
+        pred_a = predicted_scores[a]
         event_a = event_observed[a]
         # Don't want to double count
         for b in range(a + 1, len(event_times)):
             time_b = event_times[b]
-            pred_b = predicted_event_times[b]
+            pred_b = predicted_scores[b]
             event_b = event_observed[b]
             if _valid_comparison(time_a, time_b, event_a, event_b):
                 paircount += 1.0
+                # print(time_a, time_b, end='\t')
+                # print(_concordance_value(time_a, time_b, pred_a, pred_b, event_a, event_b))
                 csum += _concordance_value(time_a, time_b, pred_a, pred_b, event_a, event_b)
 
     if paircount == 0:

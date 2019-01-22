@@ -1,3 +1,8 @@
+import sys
+sys.path.append('..')
+from neuralph.datasets import load_dataset
+from neuralph import NeuralPHFitter
+from neuralph import utils
 from lifelines.datasets import load_rossi
 from lifelines import CoxPHFitter, KaplanMeierFitter
 import matplotlib.pyplot as plt
@@ -14,19 +19,18 @@ import matplotlib.pyplot as plt
 # # kmf.plot()
 # rossi_dataset.head()
 
-import sys
-sys.path.append('..')
-from neuralph.datasets import load_dataset
-from neuralph import NeuralPHFitter
-import matplotlib.pyplot as plt
 
-lung = load_dataset('lung', processed=True)
-rossi = load_dataset('rossi')
+lung = load_dataset('lung_tcga', index_col=0)
+lung.drop(['DSS', 'DSS.time', 'DFI', 'DFI.time', 'PFI', 'PFI.time'], axis=1, inplace=True)
+lung.dropna(inplace=True)
 
-nph = NeuralPHFitter(lung, duration_col='time', event_col='status', hidden_layer_sizes=(16,8), activation='linear')
-trace = nph.fit(verbose=1, lr=0.01, epoch=200, optimizer='Adam', validation_split=0.4, model_save_path='linear.h5')
+nph = NeuralPHFitter(lung, duration_col='OS.time', event_col='OS', hidden_layer_sizes=(64,32), activation='tanh', dropout=0.2)
+trace = nph.fit(verbose=1, lr=0.001, epoch=300, optimizer='Adam', validation_split=0.33, model_save_path='lung_tcga.h5', log_dir='log')
 # nph.load('nph.h5')
-nph.plot_baseline()
+# partial_hazard = nph.predict_partial_hazard()
+# nph.plot_baseline()
+nph.summary
+train_pred = nph.predict_partial_hazard()
 plt.show()
 
 # cph = CoxPHFitter()

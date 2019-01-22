@@ -10,11 +10,12 @@ from matplotlib import pyplot as plt
 plt.style.use('seaborn')
 from sklearn.model_selection import train_test_split
 from keras.models import load_model, Sequential
-from keras.layers import Dense
+from keras.layers import Dense, BatchNormalization, Dropout
 from keras.optimizers import Adam, SGD, RMSprop
 from keras.activations import relu, tanh, linear
 from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
 import tensorflow as tf
+import keras.backend as K
 from neuralph import utils
 
 class NeuralPHFitter(object):
@@ -44,7 +45,7 @@ class NeuralPHFitter(object):
             See http://courses.washington.edu/b515/l17.pdf.
     '''
 
-    def __init__(self, df, duration_col, event_col=None, hidden_layer_sizes=None, activation='linear', alpha=0.95, tie_method='Efron', strata=None):
+    def __init__(self, df, duration_col, event_col=None, hidden_layer_sizes=None, activation='linear', dropout=0, alpha=0.95, tie_method='Efron', strata=None):
         # parameter
         if not (0 < alpha <= 1.):
             raise ValueError('Alpha parameter must be between 0 and 1.')
@@ -91,9 +92,12 @@ class NeuralPHFitter(object):
         # initialize model parameters
         self.hidden_layer_sizes = hidden_layer_sizes
         self.activation = activation
+        self.dropout = dropout
+        assert 0 <= self.dropout < 1, 'Dropout should be between 0 and 1.'
 
 
-    def fit(self, optimizer='Adam', lr=0.001, epoch=200, batch_size=None, validation_split=0, verbose=False, model_save_path='nph.h5'):
+    def fit(self, optimizer='Adam', lr=0.001, epoch=200, patience=None, batch_size=None, validation_split=0, 
+            verbose=False, model_save_path='nph.h5', log_dir=None):
         '''
         Fit the neural network based proportional hazard model.
 
@@ -119,6 +123,9 @@ class NeuralPHFitter(object):
         else:
             raise ValueError('Unrecognizable optimizer, should be one of the following: Adam, SGD, RMSprop')
 
+        # split data
+        self._X_train, self._X_val, self._y_train, self._y_val = train_test_split(self._X, self._y, test_size=validation_split, random_state=1234)
+
         # initilize model
         print('Initilizing neural network model ... ', end='', flush=True)
         model = Sequential()
@@ -128,40 +135,50 @@ class NeuralPHFitter(object):
             for i, neurons in enumerate(self.hidden_layer_sizes):
                 if i == 0:
                     model.add(Dense(neurons, activation=self.activation, input_dim=self.n_features))
+                    if self.dropout > 0:
+                        model.add(Dropout(self.dropout))
+                    model.add(BatchNormalization())
                 else:
                     model.add(Dense(neurons, activation=self.activation))
+                    if self.dropout > 0:
+                        model.add(Dropout(self.dropout))
+                    model.add(BatchNormalization())
             model.add(Dense(1, activation='linear'))
         
         model.compile(optimizer=optimizer, 
-                      loss=self._neg_log_partial_likelihood,
-                      metrics=[self._concordance_index])
+                      loss=self.neg_log_partial_likelihood,
+                      metrics=[self.concordance_index])
         print('Done\nModel structure summary:', flush=True)
         print(model.summary())
 
         # fitting configuration
         if batch_size is None:
-            batch_size = self.n_samples
+            batch_size = self._X_train.shape[0]
         monitor = 'loss'
         if validation_split > 0:
             if validation_split * self.n_samples < 30:
                 raise ValueError('Validation data size too small, consider increase validation_split or set to 0 (use all data for training and validation).')
             monitor = 'val_loss'
         
-        # model fitting
+        # callback
         print('Start training neural network model ... ', flush=True)
-        early_stopper = EarlyStopping(monitor=monitor, patience=50, verbose=1)
-        check_pointer = ModelCheckpoint(model_save_path, monitor=monitor, verbose=1, save_best_only=True)
-        X_train, X_val, y_train, y_val = train_test_split(self._X, self._y, test_size=0.33)
-        trace = model.fit(X_train, y_train,
-                                validation_data=(X_val, y_val),
-                                batch_size=batch_size,
-                                epochs=epoch,
-                                verbose=verbose,
-                                shuffle=False,
-                                callbacks=[early_stopper, check_pointer])
+        call_backs = [ModelCheckpoint(model_save_path, monitor=monitor, verbose=1, save_best_only=True)]
+        if patience is not None:
+            call_backs.append(EarlyStopping(monitor=monitor, patience=patience, verbose=1))
+        if log_dir is not None:
+            call_backs.append(TensorBoard(log_dir=log_dir))
+
+        # model fitting
+        trace = model.fit(self._X_train, self._y_train,
+                            validation_data=(self._X_val, self._y_val),
+                            batch_size=batch_size,
+                            epochs=epoch,
+                            verbose=verbose,
+                            shuffle=False,
+                            callbacks=call_backs)
         model = load_model(model_save_path, 
-                           custom_objects={'_neg_log_partial_likelihood': self._neg_log_partial_likelihood,
-                                           '_concordance_index': self._concordance_index})
+                           custom_objects={'neg_log_partial_likelihood': self.neg_log_partial_likelihood,
+                                           'concordance_index': self.concordance_index})
         self.model = model
         print('\nDone training')
         self._summarize()
@@ -174,14 +191,18 @@ class NeuralPHFitter(object):
         Load trained model.
         '''
         print('Loading model from {} ...'.format(path))
-        self.model = load_model(path, custom_objects={'_neg_log_partial_likelihood': self._neg_log_partial_likelihood,
-                                                      '_concordance_index': self._concordance_index})
+        self.model = load_model(path, custom_objects={'neg_log_partial_likelihood': self.neg_log_partial_likelihood,
+                                                      'concordance_index': self.concordance_index})
         self._summarize()
 
 
     def _summarize(self):
         self.variable_hazard = self._compute_variable_hazard()
         self.baseline_hazard, self.baseline_cumulative_hazard, self.baseline_survival = self._compute_baseline_survival()
+        y_train_pred = self.model.predict(self._X_train)
+        y_val_pred = self.model.predict(self._X_val)
+        self.train_concordance_index = utils.concordance_index(y_train_pred, event_times=self._y_train[:,0], event_observed=self._y_train[:,1])
+        self.val_concordance_index = utils.concordance_index(y_val_pred, event_times=self._y_val[:,0], event_observed=self._y_val[:,1])
 
 
     @property
@@ -189,8 +210,13 @@ class NeuralPHFitter(object):
         '''
         Print the summary of fitted model.
         '''
-        print(self.variable_hazard)
-        return self.baseline_survival
+        print('---------\nSample summary\n---------')
+        print('\tSample\tEvent\tConcordance Index')
+        print('Train\t{}\t{}\t{}'.format(self._y_train.shape[0], sum(self._y_train[:,1] == 1), round(self.train_concordance_index, 3)))
+        print('Test\t{}\t{}\t{}'.format(self._y_val.shape[0], sum(self._y_val[:,1] == 1), round(self.val_concordance_index, 3)))
+        print('---------\nVariable harzard\n---------')
+        # print(self.variable_hazard)
+        print('---------')
 
 
     def predict_partial_hazard(self, X):
@@ -253,17 +279,17 @@ class NeuralPHFitter(object):
         Compute the coefficient (log(hazard)) of each variable.
         This try to explain the effect neural network variables in linear form.
         '''
-        assert self._X.shape[1] == len(self._columns), 'Columns of X is not equal to feature number'
+        assert self._X_train.shape[1] == len(self._columns), 'Columns of X is not equal to feature number'
 
-        pred_full = self.model.predict(self._X)
+        pred_full = self.model.predict(self._X_train)
         hazard = pd.Series(index=self._columns)
         for i in range(len(self._columns)):
-            tmp_X = self._X.copy()
+            tmp_X = self._X_train.copy()
             tmp_X[:,i] = 0
             pred_reduce = self.model.predict(tmp_X)
-            hazard[i] = np.nanmean((pred_full - pred_reduce) / self._X[:,i]) / self._col_std[i]
+            hazard[i] = np.nanmean((pred_full - pred_reduce) / self._X_train[:,i]) / self._col_std[i]
 
-        return hazard
+        return hazard[np.argsort(-abs(hazard))]
 
 
     def _compute_baseline_survival(self):
@@ -291,7 +317,7 @@ class NeuralPHFitter(object):
 
     # >>>>>>>>>>>  tensorflow function  <<<<<<<<<<< #
     @staticmethod
-    def _neg_log_partial_likelihood(T_E, pred_score):
+    def neg_log_partial_likelihood(T_E, pred_score):
         '''
         Compute the log partial likelihood of the predicted hazard ratio.
         '''
@@ -300,9 +326,9 @@ class NeuralPHFitter(object):
 
         # sort by time
         idx = tf.contrib.framework.argsort(T, axis=0)
-        pred_score = tf.gather(pred_score, idx)
-        T = tf.gather(T, idx)
-        E = tf.gather(E, idx)
+        pred_score = tf.reshape(tf.gather(pred_score, idx), [-1])
+        T = tf.reshape(tf.gather(T, idx), [-1])
+        E = tf.reshape(tf.gather(E, idx), [-1])
         
         # calculate partial likelihood
         hr = tf.exp(pred_score)
@@ -316,43 +342,44 @@ class NeuralPHFitter(object):
         return neg_log_partial_likeli_sum
 
     @staticmethod
-    def _concordance_index(T_E, pred_score):
+    def concordance_index(T_E, pred_score):
         '''
         Compute the concordance index between the predicted hazard ratio and observed event.
         '''
+        epsilon = tf.constant(value=0.000001)
         T = tf.slice(T_E, [0,0], [-1,1])
         E = tf.slice(T_E, [0,1], [-1,1])
 
         # sort by time
         idx = tf.contrib.framework.argsort(T, axis=0)
-        pred_score = tf.gather(pred_score, idx)
-        T = tf.gather(T, idx)
-        E = tf.gather(E, idx)
+        pred_score = tf.reshape(tf.gather(pred_score, idx), [-1])
+        T = tf.reshape(tf.gather(T, idx), [-1])
+        E = tf.reshape(tf.gather(E, idx), [-1])
 
         # compute pairwise matrix
         score_mat = tf.subtract(pred_score, tf.reshape(pred_score, [-1,1]))
-        T_mat = tf.subtract(T, tf.reshape(T, [-1,1]))
+        T_mat = tf.subtract(T, tf.reshape(T, [-1,1]))       # column - row
         E_mat_either = tf.add(E, tf.reshape(E, [-1,1]))
-        E_mat_diff = tf.subtract(E, tf.reshape(E, [-1,1]))
+        E_mat_diff = tf.subtract(E, tf.reshape(E, [-1,1]))  # column - row
 
         # valid comparsion pair
-        valid_comp1 = tf.logical_and(tf.equal(T_mat, 0), tf.equal(E_mat_either, 1))
-        valid_comp2 = tf.logical_and(tf.not_equal(T_mat, 0), tf.equal(E_mat_either, 2))
-        valid_comp3 = tf.logical_and(tf.equal(E_mat_diff, -1), tf.greater(T_mat, 0))
+        valid_comp1 = tf.logical_and(tf.equal(T_mat, 0), tf.equal(E_mat_either, 1))     # equal time, one event
+        valid_comp2 = tf.logical_and(tf.not_equal(T_mat, 0), tf.equal(E_mat_either, 2)) # both have event
+        valid_comp3 = tf.logical_and(tf.equal(E_mat_diff, -1), tf.greater(T_mat, 0))    # long time still alive
         valid_comp = tf.logical_or(tf.logical_or(valid_comp1, valid_comp2), valid_comp3)
-        valid_comp = tf.linalg.band_part(valid_comp, 0, -1)
+        valid_comp = tf.linalg.band_part(valid_comp, 0, -1)                             # upper triangular
 
         # good prediction
-        random = tf.logical_and(tf.equal(score_mat, 0), valid_comp)
+        random = tf.logical_and(tf.equal(score_mat, 0), valid_comp)         # same predicted score
         good1 = tf.logical_and(
                     tf.logical_and(
-                        tf.greater(score_mat, 0), tf.greater(T_mat, 0)
+                        tf.less(score_mat, 0), tf.greater(T_mat, 0)
                     ), valid_comp
                 )
         good2 = tf.logical_and(
                     tf.logical_and(
                         tf.logical_and(
-                            tf.greater(score_mat, 0), tf.equal(T_mat, 0)
+                            tf.less(score_mat, 0), tf.equal(T_mat, 0)
                         ), tf.equal(E_mat_diff, -1)
                     ), valid_comp
                 )
@@ -363,10 +390,10 @@ class NeuralPHFitter(object):
             tf.reduce_sum(tf.to_float(good1)), 
             tf.reduce_sum(tf.to_float(good2))
         )
-        pairs = tf.reduce_sum(tf.to_float(valid_comp))
+        pairs = tf.add(tf.reduce_sum(tf.to_float(valid_comp)), epsilon)
         c_index = tf.divide(tf.add(random, good), pairs)
 
-        return tf.subtract(1.0, c_index)
+        return c_index
 
     @staticmethod
     def _check_values(df, T, E):
