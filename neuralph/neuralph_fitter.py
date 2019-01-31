@@ -96,8 +96,8 @@ class NeuralPHFitter(object):
         assert 0 <= self.dropout < 1, 'Dropout should be between 0 and 1.'
 
 
-    def fit(self, optimizer='Adam', lr=0.001, epoch=200, patience=None, batch_size=None, validation_split=0, 
-            verbose=False, model_save_path='nph.h5', log_dir=None):
+    def fit(self, model_name='nph', optimizer='Adam', lr=0.001, epoch=200, patience=50, batch_size=None, validation_split=0, 
+            verbose=False, model_save_path='.'):
         '''
         Fit the neural network based proportional hazard model.
 
@@ -110,9 +110,11 @@ class NeuralPHFitter(object):
         Returns:
             trace of training process
         '''
-
-        # optimizer
+        # configuration
         self.lr = lr
+        self.epoch = epoch
+        self.tol = patience
+        self.test_size = validation_split
         self.optimizer = optimizer
         if self.optimizer == 'Adam':
             optimizer = Adam(lr=self.lr)
@@ -124,7 +126,7 @@ class NeuralPHFitter(object):
             raise ValueError('Unrecognizable optimizer, should be one of the following: Adam, SGD, RMSprop')
 
         # split data
-        self._X_train, self._X_val, self._y_train, self._y_val = train_test_split(self._X, self._y, test_size=validation_split, random_state=1234)
+        self._X_train, self._X_val, self._y_train, self._y_val = train_test_split(self._X, self._y, test_size=validation_split)
 
         # initilize model
         print('Initilizing neural network model ... ', end='', flush=True)
@@ -153,30 +155,39 @@ class NeuralPHFitter(object):
 
         # fitting configuration
         if batch_size is None:
-            batch_size = self._X_train.shape[0]
+            self.batch_size = self._X_train.shape[0]
+        else:
+            self.batch_size = batch_size
         monitor = 'loss'
-        if validation_split > 0:
-            if validation_split * self.n_samples < 30:
+        if self.test_size > 0:
+            if self.test_size * self.n_samples < 30:
                 raise ValueError('Validation data size too small, consider increase validation_split or set to 0 (use all data for training and validation).')
             monitor = 'val_loss'
         
+        # path
+        self.model_name = model_name
+        self.model_path = os.path.join(model_save_path, '{}@lr-{}.layer-{}.acti-{}.drop-{}.split-{}.batch-{}.epoch-{}.tol-{}.h5'.\
+            format(self.model_name, self.lr, self.hidden_layer_sizes, self.activation, self.dropout, self.test_size, self.batch_size, self.epoch, self.tol))
+        self.log_path = os.path.join(model_save_path, '{}@lr-{}.layer-{}.acti-{}.drop-{}.split-{}.batch-{}.epoch-{}.tol-{}.log'.\
+            format(self.model_name, self.lr, self.hidden_layer_sizes, self.activation, self.dropout, self.test_size, self.batch_size, self.epoch, self.tol))
+        if not os.path.isdir(self.log_path):
+            os.mkdir(self.log_path)
+        
         # callback
         print('Start training neural network model ... ', flush=True)
-        call_backs = [ModelCheckpoint(model_save_path, monitor=monitor, verbose=1, save_best_only=True)]
-        if patience is not None:
-            call_backs.append(EarlyStopping(monitor=monitor, patience=patience, verbose=1))
-        if log_dir is not None:
-            call_backs.append(TensorBoard(log_dir=log_dir))
+        model_check = ModelCheckpoint(self.model_path, monitor=monitor, verbose=1, save_best_only=True)
+        early_stop = EarlyStopping(monitor=monitor, patience=patience, verbose=1)
+        tensor_board = TensorBoard(log_dir=self.log_path)
 
         # model fitting
         trace = model.fit(self._X_train, self._y_train,
                             validation_data=(self._X_val, self._y_val),
-                            batch_size=batch_size,
+                            batch_size=self.batch_size,
                             epochs=epoch,
                             verbose=verbose,
                             shuffle=False,
-                            callbacks=call_backs)
-        model = load_model(model_save_path, 
+                            callbacks=[model_check, early_stop, tensor_board])
+        model = load_model(self.model_path, 
                            custom_objects={'neg_log_partial_likelihood': self.neg_log_partial_likelihood,
                                            'concordance_index': self.concordance_index})
         self.model = model
@@ -197,12 +208,17 @@ class NeuralPHFitter(object):
 
 
     def _summarize(self):
+        '''
+        Print the summary information of model
+        '''
         self.variable_hazard = self._compute_variable_hazard()
         self.baseline_hazard, self.baseline_cumulative_hazard, self.baseline_survival = self._compute_baseline_survival()
-        y_train_pred = self.model.predict(self._X_train)
-        y_val_pred = self.model.predict(self._X_val)
-        self.train_concordance_index = utils.concordance_index(y_train_pred, event_times=self._y_train[:,0], event_observed=self._y_train[:,1])
-        self.val_concordance_index = utils.concordance_index(y_val_pred, event_times=self._y_val[:,0], event_observed=self._y_val[:,1])
+        self._y_train_pred = np.reshape(self.model.predict(self._X_train), (-1))
+        self._y_val_pred = np.reshape(self.model.predict(self._X_val), (-1))
+        self.train_loss = utils.neg_log_partial_likelihood(self._y_train_pred, event_times=self._y_train[:,0], event_observed=self._y_train[:,1])
+        self.val_loss = utils.neg_log_partial_likelihood(self._y_val_pred, event_times=self._y_val[:,0], event_observed=self._y_val[:,1])
+        self.train_concordance_index = utils.concordance_index(self._y_train_pred, event_times=self._y_train[:,0], event_observed=self._y_train[:,1])
+        self.val_concordance_index = utils.concordance_index(self._y_val_pred, event_times=self._y_val[:,0], event_observed=self._y_val[:,1])
 
 
     @property
@@ -210,13 +226,15 @@ class NeuralPHFitter(object):
         '''
         Print the summary of fitted model.
         '''
+        res = pd.DataFrame(np.nan, index=['Train', 'Test'], columns=['Sample', 'Event', 'neg_log_likelihood', 'Concordance'])
+        res.loc['Train',:] = [self._y_train.shape[0], sum(self._y_train[:,1] == 1), round(self.train_loss, 3), round(self.train_concordance_index, 3)]
+        res.loc['Test',:] = [self._y_val.shape[0], sum(self._y_val[:,1] == 1), round(self.val_loss, 3), round(self.val_concordance_index, 3)]
         print('---------\nSample summary\n---------')
-        print('\tSample\tEvent\tConcordance Index')
-        print('Train\t{}\t{}\t{}'.format(self._y_train.shape[0], sum(self._y_train[:,1] == 1), round(self.train_concordance_index, 3)))
-        print('Test\t{}\t{}\t{}'.format(self._y_val.shape[0], sum(self._y_val[:,1] == 1), round(self.val_concordance_index, 3)))
-        print('---------\nVariable harzard\n---------')
+        print(res)
+        # print('---------\nVariable harzard\n---------')
         # print(self.variable_hazard)
         print('---------')
+        return res
 
 
     def predict_partial_hazard(self, X):

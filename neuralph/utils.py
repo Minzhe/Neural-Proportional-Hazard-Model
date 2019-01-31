@@ -209,7 +209,7 @@ def neg_log_partial_likelihood(predicted_scores, event_times, event_observed=Non
     predicted_scores, event_times, event_observed = _clean_time_series(predicted_scores, event_times, event_observed)
     at_risk = np.log(np.cumsum(np.exp(predicted_scores)[::-1])[::-1])
     l = predicted_scores - at_risk
-    return -np.sum(l[event_observed == 1])
+    return 0-np.sum(l[event_observed == 1])
 
 
 
